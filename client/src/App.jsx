@@ -4,6 +4,7 @@ import ContextTree from './components/ContextTree';
 import CommandsPanel from './components/CommandsPanel';
 import BindingsPanel from './components/BindingsPanel';
 import KeySimulator from './components/KeySimulator';
+import RegressionSuite from './components/RegressionSuite';
 
 export default function App() {
   const [state, setState] = useState({ contexts: [], commands: [] });
@@ -11,6 +12,7 @@ export default function App() {
   const [review, setReview] = useState(null);
   const [globalError, setGlobalError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('review'); // review | suite
 
   const refresh = useCallback(async () => {
     const s = await api.getState();
@@ -108,15 +110,28 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>⌨ 上下文快捷键审校台</h1>
+        <div className="header-row">
+          <h1>⌨ 上下文快捷键审校台</h1>
+          <nav className="view-tabs">
+            <button className={`tab ${view === 'review' ? 'active' : ''}`} onClick={() => setView('review')}>
+              审校台
+            </button>
+            <button className={`tab ${view === 'suite' ? 'active' : ''}`} onClick={() => setView('suite')}>
+              回归套件生成
+            </button>
+          </nav>
+        </div>
         <p className="tagline">
-          最近祖先生效 · 子级覆盖祖先 · 同层重复/前缀冲突检测 · 逐键模拟
+          最近祖先生效 · 子级覆盖祖先 · 同层重复/前缀冲突检测 · 逐键模拟 · 叶子上下文最小集合覆盖回归套件
         </p>
       </header>
 
       {globalError && <div className="global-error">⚠ {globalError}</div>}
 
-      <div className="layout">
+      {view === 'suite' ? (
+        <RegressionSuite />
+      ) : (
+        <div className="layout">
         <aside className="col-left">
           <ContextTree
             contexts={state.contexts}
@@ -143,7 +158,8 @@ export default function App() {
           <BindingsPanel review={review} />
           <KeySimulator key={'sim-' + (selectedContext?.id || 'none')} selectedContext={selectedContext} />
         </section>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

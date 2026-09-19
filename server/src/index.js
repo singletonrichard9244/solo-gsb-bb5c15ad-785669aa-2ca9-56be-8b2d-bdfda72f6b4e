@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const store = require('./store');
 const { computeEffective, evaluateKey, canonicalPress } = require('./engine');
+const { generateRegressionSuite } = require('./suite');
 
 const app = express();
 app.use(cors());
@@ -90,6 +91,15 @@ app.post(
     res.json(evaluateKey(store.snapshot(), req.params.contextId, tokens));
   }),
 );
+
+// ---- 回归套件生成：叶子上下文最小集合覆盖 ----
+app.get('/api/suite', (req, res, next) => {
+  try {
+    res.json(generateRegressionSuite(store.snapshot()));
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ---- 错误处理 ----
 app.use('/api', (err, req, res, next) => {

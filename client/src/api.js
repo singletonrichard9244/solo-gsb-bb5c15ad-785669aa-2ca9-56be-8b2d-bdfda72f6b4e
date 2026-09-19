@@ -21,4 +21,5 @@ export const api = {
   review: (contextId) => request(`/review/${contextId}`),
   simulate: (contextId, buffer) =>
     request(`/simulate/${contextId}`, { method: 'POST', body: JSON.stringify({ buffer }) }),
+  suite: () => request('/suite'),
 };

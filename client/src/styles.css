@@ -576,3 +576,129 @@ kbd.press {
     display: flex;
   }
 }
+
+/* ---------- 页签 ---------- */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.view-tabs {
+  display: inline-flex;
+  gap: 4px;
+  background: #101725;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+}
+.view-tabs .tab {
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  padding: 5px 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.view-tabs .tab:hover {
+  background: #1a2438;
+}
+.view-tabs .tab.active {
+  background: var(--accent-2);
+  color: #eaf2ff;
+}
+
+/* ---------- 回归套件页 ---------- */
+.suite-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 18px 24px;
+  max-width: 1180px;
+}
+.suite-actions {
+  display: flex;
+  gap: 8px;
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 12px 14px;
+}
+.stat-card {
+  background: #101725;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.stat-card .stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #eaf2ff;
+}
+.stat-card.ok .stat-value {
+  color: var(--ok);
+}
+.stat-card.warn .stat-value {
+  color: var(--warn);
+}
+.stat-card .stat-label {
+  font-size: 12px;
+  color: var(--text);
+  margin-top: 2px;
+}
+.stat-card .stat-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.suite-entry .panel-header h2 .sub {
+  margin-left: 8px;
+}
+.suite-conflicts {
+  padding: 4px 14px 12px;
+}
+.suite-conflicts h4 {
+  margin: 8px 0;
+  font-size: 12.5px;
+  color: var(--warn);
+}
+.suite-conflict-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.suite-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 7px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.suite-conflict .conflict-seqs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.suite-conflict .conflict-seqs em {
+  color: var(--muted);
+  font-style: normal;
+}
+.suite-conflict-parties {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.row-conflict {
+  background: rgba(245, 181, 68, 0.06);
+}
+.suite-entry .bind-table {
+  margin-bottom: 4px;
+}
