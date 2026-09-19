@@ -1,5 +1,12 @@
 const assert = require('node:assert/strict');
-const { computeEffective, evaluateKey, parseSequence } = require('../src/engine');
+const {
+  computeEffective,
+  evaluateKey,
+  parseSequence,
+  generateRegressionSuite,
+  minimumSetCover,
+  conflictGoalId,
+} = require('../src/engine');
 
 let passed = 0;
 const test = (name, fn) => {
@@ -117,6 +124,153 @@ test('上下文路径展示双方来源', () => {
   assert.ok(conflict.parties.every((p) => typeof p.contextPath === 'string' && p.contextPath.length > 0));
   const labels = conflict.parties.map((p) => p.shortestLabel);
   assert.ok(labels.includes('G') && labels.includes('G D'));
+});
+
+// ---------- 回归套件生成 ----------
+test('回归套件：叶子候选与精确集合覆盖（最小叶子数）', () => {
+  const suite = generateRegressionSuite(state);
+  // 叶子：B 与 Sibling（Root、A 不是叶子）
+  assert.equal(suite.stats.leafCount, 2);
+  assert.deepEqual(
+    suite.candidates.map((c) => c.contextId).sort(),
+    ['b', 'sibling'],
+  );
+  // 目标：8 条命令在至少一个叶子可触发（c1 在 Sibling 生效）+ duplicate 1
+  // + prefix 2（B 下 c7⊂c3 与 Sibling 下 c2⊂c3 是两个不同冲突身份）
+  assert.equal(suite.stats.triggerableCommandCount, 8);
+  assert.equal(suite.stats.duplicateConflictCount, 1);
+  assert.equal(suite.stats.prefixConflictCount, 2);
+  assert.equal(suite.stats.coveredGoalCount, suite.stats.coverableGoalCount);
+  // 必须同时入选两个叶子：Sibling 独有 c8/k，B 独有 duplicate 与跨层 prefix
+  assert.equal(suite.stats.selectedContextCount, 2);
+  const selectedIds = suite.suite.map((tc) => tc.contextId).sort();
+  assert.deepEqual(selectedIds, ['b', 'sibling']);
+
+  const bCase = suite.suite.find((tc) => tc.contextId === 'b');
+  // 每个入选上下文列出输入序列、预期触发命令集合
+  const yInput = bCase.inputs.find((i) => i.sequenceLabel === 'Y');
+  assert.equal(yInput.duplicate, true);
+  assert.deepEqual(
+    yInput.expectedCommands.map((c) => c.commandId).sort(),
+    ['c5', 'c6'],
+  );
+  // 预期冲突类型同时包含 duplicate 与 prefix
+  assert.deepEqual(
+    bCase.expectedConflicts.map((c) => c.type).sort(),
+    ['duplicate', 'prefix'],
+  );
+});
+
+test('回归套件：任何叶子都无法触发的命令单列原因，不计入覆盖', () => {
+  // u1 定义在根、序列 S：在叶子 B 被 A 层同序列覆盖，在叶子 S 被自身同序列覆盖
+  const st = {
+    contexts: [
+      { id: 'r', parentId: null, name: 'R' },
+      { id: 'a', parentId: 'r', name: 'A' },
+      { id: 'b', parentId: 'a', name: 'B' },
+      { id: 's', parentId: 'r', name: 'S' },
+    ],
+    commands: [
+      { id: 'u1', contextId: 'r', name: 'r-save', sequenceTokens: ['s'], sequenceLabel: 'S', description: '' },
+      { id: 'a1', contextId: 'a', name: 'a-save', sequenceTokens: ['s'], sequenceLabel: 'S', description: '' },
+      { id: 's1', contextId: 's', name: 's-save', sequenceTokens: ['s'], sequenceLabel: 'S', description: '' },
+      { id: 'ok', contextId: 'r', name: 'r-quit', sequenceTokens: ['q'], sequenceLabel: 'Q', description: '' },
+    ],
+  };
+  const suite = generateRegressionSuite(st);
+  const unreachable = suite.unreachableCommands.find((u) => u.commandId === 'u1');
+  assert.ok(unreachable, 'u1 应列为不可触发');
+  assert.match(unreachable.reason, /覆盖/);
+  assert.deepEqual(unreachable.shadowedBy.map((s) => s.contextId).sort(), ['a', 's']);
+  // 不可触发命令不算可触发、不算已覆盖
+  assert.equal(suite.stats.triggerableCommandCount, 3); // a1 / s1 / ok
+  assert.equal(suite.stats.unreachableCommandCount, 1);
+  assert.ok(
+    !suite.suite.some((tc) => tc.inputs.some((i) => i.expectedCommands.some((c) => c.commandId === 'u1'))),
+  );
+  // 但可触发目标仍被完整覆盖
+  assert.equal(suite.stats.coveredGoalCount, suite.stats.coverableGoalCount);
+});
+
+test('回归套件：定义在非叶子上下文且子树无覆盖时命令仍可在叶子触发', () => {
+  // c2(root G)、c3(root G D) 在 A、B、Sibling 都生效
+  const suite = generateRegressionSuite(state);
+  assert.ok(!suite.unreachableCommands.some((u) => u.commandId === 'c2'));
+  assert.ok(!suite.unreachableCommands.some((u) => u.commandId === 'c3'));
+});
+
+test('回归套件：非叶子上下文独占（无叶子后代）的命令不可触发', () => {
+  const st = {
+    contexts: state.contexts,
+    commands: [
+      ...state.commands,
+      { id: 'c11', contextId: 'a', name: 'a-only', sequenceTokens: ['q'], sequenceLabel: 'Q', description: '' },
+      { id: 'c12', contextId: 'b', name: 'b-cover-q', sequenceTokens: ['q'], sequenceLabel: 'Q', description: '' },
+    ],
+  };
+  const suite = generateRegressionSuite(st);
+  // A 有子 B：Q 在 B 被覆盖，A 没有其他叶子后代
+  const u = suite.unreachableCommands.find((x) => x.commandId === 'c11');
+  assert.ok(u);
+  assert.match(u.reason, /全部 1 个叶子/);
+});
+
+test('回归套件：同解时按上下文路径字典序稳定选择', () => {
+  // 两个叶子 zfirst / asecond 覆盖目标完全相同 => 任选其一；应选路径字典序更小的
+  const st = {
+    contexts: [
+      { id: 'r', parentId: null, name: 'R' },
+      { id: 'zc', parentId: 'r', name: 'Zchild', description: '' },
+      { id: 'ac', parentId: 'r', name: 'Achild', description: '' },
+    ],
+    commands: [
+      { id: 'm1', contextId: 'r', name: 'm-save', sequenceTokens: ['s'], sequenceLabel: 'S', description: '' },
+    ],
+  };
+  const suite = generateRegressionSuite(st);
+  assert.equal(suite.stats.selectedContextCount, 1);
+  assert.equal(suite.suite[0].contextId, 'ac'); // R / Achild < R / Zchild
+});
+
+test('minimumSetCover：最小数量 + 字典序平局的基本性质', () => {
+  const mk = (contextPath, arr) => ({ contextPath, covers: new Set(arr) });
+  const candidates = [
+    mk('Z', ['x']),
+    mk('A', ['x']), // 与 Z 同覆盖，路径更小
+    mk('M', ['y']),
+    mk('B', ['x', 'y']),
+  ];
+  const picked = minimumSetCover(candidates, new Set(['x', 'y']));
+  assert.equal(picked.length, 1);
+  assert.equal(picked[0].contextPath, 'B'); // 单集合可覆盖全部
+
+  const picked2 = minimumSetCover(
+    [mk('Z', ['x']), mk('A', ['x']), mk('Y', ['y']), mk('B', ['y'])],
+    new Set(['x', 'y']),
+  );
+  assert.deepEqual(picked2.map((c) => c.contextPath).sort(), ['A', 'B']);
+});
+
+test('conflictGoalId：参与命令集合相同即同一冲突身份', () => {
+  const dup1 = { type: 'duplicate', parties: [{ commandId: 'c5' }, { commandId: 'c6' }] };
+  const dup2 = { type: 'duplicate', parties: [{ commandId: 'c6' }, { commandId: 'c5' }] };
+  assert.equal(conflictGoalId(dup1), conflictGoalId(dup2));
+  const pre1 = {
+    type: 'prefix',
+    parties: [
+      { commandId: 'c2', role: 'prefix' },
+      { commandId: 'c3', role: 'extension' },
+    ],
+  };
+  const pre2 = {
+    type: 'prefix',
+    parties: [
+      { commandId: 'c3', role: 'extension' },
+      { commandId: 'c2', role: 'prefix' },
+    ],
+  };
+  assert.equal(conflictGoalId(pre1), conflictGoalId(pre2));
+  assert.notEqual(conflictGoalId(pre1), conflictGoalId(dup1));
 });
 
 console.log(`\n引擎测试全部通过：${passed} 项`);

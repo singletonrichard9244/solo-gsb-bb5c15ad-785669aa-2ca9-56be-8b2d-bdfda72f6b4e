@@ -4,6 +4,7 @@ import ContextTree from './components/ContextTree';
 import CommandsPanel from './components/CommandsPanel';
 import BindingsPanel from './components/BindingsPanel';
 import KeySimulator from './components/KeySimulator';
+import RegressionSuite from './components/RegressionSuite';
 
 export default function App() {
   const [state, setState] = useState({ contexts: [], commands: [] });
@@ -11,6 +12,7 @@ export default function App() {
   const [review, setReview] = useState(null);
   const [globalError, setGlobalError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('review'); // review | regression
 
   const refresh = useCallback(async () => {
     const s = await api.getState();
@@ -112,38 +114,58 @@ export default function App() {
         <p className="tagline">
           最近祖先生效 · 子级覆盖祖先 · 同层重复/前缀冲突检测 · 逐键模拟
         </p>
+        <nav className="view-tabs">
+          <button
+            className={view === 'review' ? 'tab active' : 'tab'}
+            onClick={() => setView('review')}
+          >
+            📝 审校与模拟
+          </button>
+          <button
+            className={view === 'regression' ? 'tab active' : 'tab'}
+            onClick={() => setView('regression')}
+          >
+            🧪 回归套件生成
+          </button>
+        </nav>
       </header>
 
       {globalError && <div className="global-error">⚠ {globalError}</div>}
 
-      <div className="layout">
-        <aside className="col-left">
-          <ContextTree
-            contexts={state.contexts}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onAdd={addContext}
-            onRename={renameContext}
-            onDelete={deleteContext}
-          />
-        </aside>
+      {view === 'regression' ? (
+        <div className="regression-layout">
+          <RegressionSuite />
+        </div>
+      ) : (
+        <div className="layout">
+          <aside className="col-left">
+            <ContextTree
+              contexts={state.contexts}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onAdd={addContext}
+              onRename={renameContext}
+              onDelete={deleteContext}
+            />
+          </aside>
 
-        <main className="col-mid">
-          <CommandsPanel
-            contexts={state.contexts}
-            commands={state.commands}
-            selectedContext={selectedContext}
-            onCreate={createCommand}
-            onUpdate={updateCommand}
-            onDelete={deleteCommand}
-          />
-        </main>
+          <main className="col-mid">
+            <CommandsPanel
+              contexts={state.contexts}
+              commands={state.commands}
+              selectedContext={selectedContext}
+              onCreate={createCommand}
+              onUpdate={updateCommand}
+              onDelete={deleteCommand}
+            />
+          </main>
 
-        <section className="col-right">
-          <BindingsPanel review={review} />
-          <KeySimulator key={'sim-' + (selectedContext?.id || 'none')} selectedContext={selectedContext} />
-        </section>
-      </div>
+          <section className="col-right">
+            <BindingsPanel review={review} />
+            <KeySimulator key={'sim-' + (selectedContext?.id || 'none')} selectedContext={selectedContext} />
+          </section>
+        </div>
+      )}
     </div>
   );
 }

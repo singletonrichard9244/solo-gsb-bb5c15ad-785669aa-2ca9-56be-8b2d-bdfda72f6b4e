@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const express = require('express');
 const cors = require('cors');
 const store = require('./store');
-const { computeEffective, evaluateKey, canonicalPress } = require('./engine');
+const { computeEffective, evaluateKey, canonicalPress, generateRegressionSuite } = require('./engine');
 
 const app = express();
 app.use(cors());
@@ -90,6 +90,19 @@ app.post(
     res.json(evaluateKey(store.snapshot(), req.params.contextId, tokens));
   }),
 );
+
+// ---- 回归套件生成（叶子候选 + 精确集合覆盖，只读复用现有生效规则） ----
+app.get('/api/regression-suite', (req, res, next) => {
+  try {
+    const suite = generateRegressionSuite(store.snapshot());
+    if (req.query.download !== undefined) {
+      res.setHeader('Content-Disposition', 'attachment; filename="regression-suite.json"');
+    }
+    res.json(suite);
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ---- 错误处理 ----
 app.use('/api', (err, req, res, next) => {

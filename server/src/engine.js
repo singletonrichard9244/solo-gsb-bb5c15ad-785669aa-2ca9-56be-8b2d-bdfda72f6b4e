@@ -359,6 +359,336 @@ function evaluateKey(state, contextId, bufferTokens) {
   return { status: 'no-match', buffer, bufferLabel, triggered: [], candidates: [], effective: eff };
 }
 
+/** 收集某上下文子树内的全部叶子上下文（无子上下文） */
+function descendantLeaves(index, contextId) {
+  const start = index.byId.get(contextId);
+  if (!start) return [];
+  const out = [];
+  const walk = (node) => {
+    if (node.children.length === 0) out.push(node);
+    else node.children.forEach(walk);
+  };
+  walk(start);
+  return out;
+}
+
+/**
+ * 冲突的稳定身份：同一组命令形成的冲突在不同叶子下视为同一个测试目标。
+ * - duplicate：dup:<双方命令id排序>
+ * - prefix：pre:<前缀方命令id排序>::<延伸方命令id排序>
+ */
+function conflictGoalId(conflict) {
+  if (conflict.type === 'duplicate') {
+    const ids = conflict.parties.map((p) => p.commandId).sort();
+    return `dup:${ids.join(',')}`;
+  }
+  const prefixIds = conflict.parties
+    .filter((p) => p.role === 'prefix')
+    .map((p) => p.commandId)
+    .sort();
+  const extensionIds = conflict.parties
+    .filter((p) => p.role === 'extension')
+    .map((p) => p.commandId)
+    .sort();
+  return `pre:${prefixIds.join(',')}::${extensionIds.join(',')}`;
+}
+
+function setCoversAll(container, subset) {
+  for (const g of subset) if (!container.has(g)) return false;
+  return true;
+}
+
+/** 路径数组字典序比较（排序后比较；短前缀更小） */
+function lexLessPaths(a, b) {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    if (a[i] < b[i]) return true;
+    if (a[i] > b[i]) return false;
+  }
+  return a.length < b.length;
+}
+
+/**
+ * 精确集合覆盖：在候选集合中找出覆盖 universe 所需候选数量最少的组合。
+ * candidates 已按 contextPath 字典序升序排列；同解（数量相同）时保留
+ * 入选路径排序后字典序最小的组合，保证结果稳定、与数据顺序无关。
+ * 分支限界（MRV 选目标 + 覆盖数下界 + 贪心初始上界 + 记忆剪枝），精确求解。
+ */
+function minimumSetCover(candidates, universe) {
+  if (universe.size === 0 || candidates.length === 0) return [];
+
+  // 按路径字典序排序，使支配精简与平局判定不依赖调用方的传入顺序
+  const sorted = candidates
+    .slice()
+    .sort((a, b) => (a.contextPath < b.contextPath ? -1 : a.contextPath > b.contextPath ? 1 : 0));
+
+  // 支配精简：仅允许“路径字典序更小且覆盖为超集”的候选淘汰后者，
+  // 这样不会丢掉可能构成字典序更优同解的候选。
+  const alive = sorted.map(() => true);
+  for (let b = 1; b < sorted.length; b++) {
+    for (let a = 0; a < b; a++) {
+      if (alive[a] && setCoversAll(sorted[a].covers, sorted[b].covers)) {
+        alive[b] = false;
+        break;
+      }
+    }
+  }
+  const sets = sorted.filter((_, i) => alive[i]);
+
+  // 贪心求一个可行上界（同等新增覆盖数时取路径更小者）
+  const greedyPick = () => {
+    const remaining = new Set(universe);
+    const picked = [];
+    while (remaining.size > 0) {
+      let bestIdx = -1;
+      let bestCount = -1;
+      sets.forEach((c, ci) => {
+        let n = 0;
+        for (const g of c.covers) if (remaining.has(g)) n++;
+        if (
+          n > bestCount ||
+          (n === bestCount && bestIdx >= 0 && c.contextPath < sets[bestIdx].contextPath)
+        ) {
+          bestIdx = ci;
+          bestCount = n;
+        }
+      });
+      picked.push(bestIdx);
+      for (const g of sets[bestIdx].covers) remaining.delete(g);
+    }
+    return picked;
+  };
+
+  let bestChosen = greedyPick();
+  let bestPaths = bestChosen.map((ci) => sets[ci].contextPath).sort();
+  const chosen = [];
+  const memo = new Map(); // remaining 签名 -> 到达它时最少的已选数量（仅严格更劣才剪枝）
+
+  const consider = () => {
+    const paths = chosen.map((ci) => sets[ci].contextPath).sort();
+    if (paths.length < bestPaths.length || (paths.length === bestPaths.length && lexLessPaths(paths, bestPaths))) {
+      bestPaths = paths;
+      bestChosen = chosen.slice();
+    }
+  };
+
+  const dfs = (remaining) => {
+    if (remaining.size === 0) {
+      consider();
+      return;
+    }
+    const key = [...remaining].sort().join('|');
+    const prevDepth = memo.get(key);
+    if (prevDepth !== undefined && prevDepth < chosen.length) return;
+    memo.set(key, chosen.length);
+
+    // 下界：剩余目标数 / 单集合最大新增覆盖数
+    let maxCoverage = 0;
+    for (const c of sets) {
+      let n = 0;
+      for (const g of c.covers) if (remaining.has(g)) n++;
+      if (n > maxCoverage) maxCoverage = n;
+    }
+    if (chosen.length + Math.ceil(remaining.size / maxCoverage) > bestPaths.length) return;
+
+    // MRV：选能覆盖它的候选数最少的未覆盖目标分支；候选保持路径字典序
+    let branchSets = null;
+    for (const goal of remaining) {
+      const cs = [];
+      sets.forEach((c, ci) => {
+        if (c.covers.has(goal)) cs.push(ci);
+      });
+      if (!branchSets || cs.length < branchSets.length) {
+        branchSets = cs;
+        if (cs.length === 1) break;
+      }
+    }
+
+    for (const ci of branchSets) {
+      chosen.push(ci);
+      const next = new Set(remaining);
+      for (const g of sets[ci].covers) next.delete(g);
+      dfs(next);
+      chosen.pop();
+    }
+  };
+
+  dfs(new Set(universe));
+  return bestChosen.map((ci) => sets[ci]);
+}
+
+/**
+ * 回归套件生成：
+ * 1. 以全部叶子上下文为候选，复用 computeEffective 的生效规则；
+ * 2. 测试目标 = 每条可在某个叶子触发的命令 + 每个可在某个叶子观察到的
+ *    同层重复（duplicate）/ 前缀冲突（prefix），冲突以参与命令集合判定身份；
+ * 3. 精确集合覆盖选出叶子数量最少的套件，同解按上下文路径字典序稳定选择；
+ * 4. 任何叶子都无法触发的命令列入 unreachableCommands 并给出原因，不计入覆盖。
+ */
+function generateRegressionSuite(state) {
+  const index = buildIndex(state.contexts);
+  const leaves = [...index.byId.values()]
+    .filter((c) => c.children.length === 0)
+    .map((c) => ({ id: c.id, path: contextPath(index, c.id) }))
+    .sort((a, b) => (a.path === b.path ? (a.id < b.id ? -1 : 1) : a.path < b.path ? -1 : 1));
+
+  // 每个叶子跑一次现有审校规则
+  const reviews = leaves.map((leaf) => ({ leaf, eff: computeEffective(state, leaf.id) }));
+
+  const triggerLeafIds = new Map(); // commandId -> 可触发它的叶子 id 列表
+  const shadowerCounter = new Map(); // commandId -> Map(覆盖者 contextId -> 叶子数)
+  const conflictGoals = new Map(); // goalId -> 冲突对象（代表）
+
+  for (const { leaf, eff } of reviews) {
+    for (const e of eff.entries) {
+      if (e.state === 'shadowed') {
+        if (e.shadowedBy) {
+          if (!shadowerCounter.has(e.commandId)) shadowerCounter.set(e.commandId, new Map());
+          const m = shadowerCounter.get(e.commandId);
+          m.set(e.shadowedBy, (m.get(e.shadowedBy) || 0) + 1);
+        }
+      } else if (!triggerLeafIds.has(e.commandId)) {
+        triggerLeafIds.set(e.commandId, [leaf.id]);
+      } else {
+        triggerLeafIds.get(e.commandId).push(leaf.id);
+      }
+    }
+    for (const c of eff.conflicts) {
+      const goalId = conflictGoalId(c);
+      if (!conflictGoals.has(goalId)) conflictGoals.set(goalId, c);
+    }
+  }
+
+  // 不可触发命令：不在任何叶子生效的命令，单列原因且不计入覆盖目标
+  const unreachableCommands = [];
+  for (const cmd of state.commands) {
+    if (triggerLeafIds.has(cmd.id)) continue;
+    const leavesUnder = descendantLeaves(index, cmd.contextId);
+    let reason;
+    let shadowedBy = [];
+    if (leavesUnder.length === 0) {
+      reason = '所属上下文的子树中不存在叶子上下文，没有可执行该命令的测试位置';
+    } else {
+      const m = shadowerCounter.get(cmd.id);
+      if (m && m.size > 0) {
+        shadowedBy = [...m.keys()]
+          .map((sid) => ({ contextId: sid, contextPath: contextPath(index, sid) }))
+          .sort((a, b) => (a.contextPath < b.contextPath ? -1 : a.contextPath > b.contextPath ? 1 : 0));
+        reason =
+          `序列「${cmd.sequenceLabel}」在所属上下文（${contextPath(index, cmd.contextId)}）子树下的全部 ` +
+          `${leavesUnder.length} 个叶子上下文中均被更近祖先的同序列绑定覆盖（shadowed，覆盖位置：` +
+          `${shadowedBy.map((s) => s.contextPath).join('、')}），任何叶子都无法触发该命令`;
+      } else {
+        reason = '该命令未出现在任何叶子上下文的生效绑定中，无法从叶子上下文触发';
+      }
+    }
+    unreachableCommands.push({
+      commandId: cmd.id,
+      name: cmd.name,
+      description: cmd.description || '',
+      contextId: cmd.contextId,
+      contextPath: contextPath(index, cmd.contextId),
+      sequenceTokens: cmd.sequenceTokens,
+      sequenceLabel: cmd.sequenceLabel,
+      reason,
+      shadowedBy,
+    });
+  }
+  unreachableCommands.sort((a, b) =>
+    a.contextPath === b.contextPath
+      ? a.sequenceLabel.localeCompare(b.sequenceLabel) || (a.commandId < b.commandId ? -1 : 1)
+      : a.contextPath < b.contextPath
+        ? -1
+        : 1,
+  );
+
+  // 覆盖目标全集：可触发命令 + 叶子可见冲突
+  const universe = new Set();
+  for (const id of triggerLeafIds.keys()) universe.add(`cmd:${id}`);
+  for (const id of conflictGoals.keys()) universe.add(id);
+
+  // 候选叶子及其覆盖的目标集合
+  const candidates = reviews
+    .map(({ leaf, eff }) => {
+      const covers = new Set();
+      for (const e of eff.entries) {
+        if (e.state !== 'shadowed') covers.add(`cmd:${e.commandId}`);
+      }
+      for (const c of eff.conflicts) covers.add(conflictGoalId(c));
+      return { contextId: leaf.id, contextPath: leaf.path, covers, eff };
+    })
+    .filter((c) => c.covers.size > 0);
+  // leaves 已按路径排序，candidates 保持路径字典序，供集合覆盖平局判定使用
+
+  const selected = minimumSetCover(candidates, universe);
+  const selectedIds = new Set(selected.map((c) => c.contextId));
+
+  const suite = selected.map((c) => {
+    const eff = c.eff;
+    const inputs = eff.effectiveGroups
+      .slice()
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map((g) => ({
+        sequenceLabel: g.label,
+        sequenceTokens: g.tokens,
+        duplicate: g.duplicate,
+        expectedCommands: g.commands
+          .map((rec) => ({
+            commandId: rec.cmd.id,
+            name: rec.cmd.name,
+            contextPath: rec.contextPath,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name) || (a.commandId < b.commandId ? -1 : 1)),
+      }));
+    return {
+      contextId: c.contextId,
+      contextPath: c.contextPath,
+      inputs,
+      expectedConflicts: eff.conflicts,
+      coveredGoals: [...c.covers].sort(),
+    };
+  });
+  suite.sort((a, b) => (a.contextPath < b.contextPath ? -1 : a.contextPath > b.contextPath ? 1 : 0));
+
+  let duplicateConflictCount = 0;
+  let prefixConflictCount = 0;
+  for (const c of conflictGoals.values()) {
+    if (c.type === 'duplicate') duplicateConflictCount++;
+    else prefixConflictCount++;
+  }
+
+  const coveredGoals = new Set();
+  for (const c of selected) for (const g of c.covers) coveredGoals.add(g);
+  const coveredCommandCount = [...coveredGoals].filter((g) => g.startsWith('cmd:')).length;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    stats: {
+      leafCount: leaves.length,
+      candidateCount: candidates.length,
+      selectedContextCount: suite.length,
+      commandCount: state.commands.length,
+      triggerableCommandCount: triggerLeafIds.size,
+      coveredCommandCount,
+      unreachableCommandCount: unreachableCommands.length,
+      conflictCount: conflictGoals.size,
+      duplicateConflictCount,
+      prefixConflictCount,
+      inputSequenceCount: suite.reduce((n, tc) => n + tc.inputs.length, 0),
+      coverableGoalCount: universe.size,
+      coveredGoalCount: coveredGoals.size,
+    },
+    suite,
+    candidates: candidates.map((c) => ({
+      contextId: c.contextId,
+      contextPath: c.contextPath,
+      goalCount: c.covers.size,
+      selected: selectedIds.has(c.contextId),
+    })),
+    unreachableCommands,
+  };
+}
+
 function pressToPretty(token) {
   const MOD_PRETTY = { ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', meta: 'Meta' };
   return token
@@ -378,4 +708,8 @@ module.exports = {
   contextPath,
   computeEffective,
   evaluateKey,
+  descendantLeaves,
+  conflictGoalId,
+  minimumSetCover,
+  generateRegressionSuite,
 };
